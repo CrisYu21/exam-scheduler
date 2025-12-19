@@ -1,4 +1,5 @@
-import readline
+from prompt_toolkit import prompt
+from prompt_toolkit.completion import WordCompleter
 
 # --- Subject Data (lecture-only, labs excluded) ---
 subjects = [
@@ -25,21 +26,17 @@ subjects = [
 exams = []  # store exam records
 
 # --- Autocomplete Setup ---
-def completer(text, state):
-    options = [s["code"] + " " + s["title"] for s in subjects if text.lower() in (s["code"] + " " + s["title"]).lower()]
-    if state < len(options):
-        return options[state]
-    return None
-
-readline.set_completer(completer)
-readline.parse_and_bind("tab: complete")
+subject_completer = WordCompleter(
+    [s["code"] + " " + s["title"] for s in subjects],
+    ignore_case=True
+)
 
 # --- Conflict Detection ---
 def has_conflict(new_exam):
     for exam in exams:
-        if exam["date"] == new_exam["date"] and exam["time"] == new_exam["time"]:
-            if exam["room"] == new_exam["room"]:
-                return f"Room conflict: {exam['room']} already booked."
+        if exam["date"] == new_exam["date"] and exam["exam_time"] == new_exam["exam_time"]:
+            if exam["exam_room"] == new_exam["exam_room"]:
+                return f"Room conflict: {exam['exam_room']} already booked."
             if exam["proctor"] == new_exam["proctor"]:
                 return f"Proctor conflict: {exam['proctor']} already assigned."
             if exam["section"] == new_exam["section"]:
@@ -48,7 +45,7 @@ def has_conflict(new_exam):
 
 # --- Add Exam ---
 def add_exam():
-    subject_input = input("Enter Subject Code/Title (Tab for autocomplete): ")
+    subject_input = prompt("Enter Subject Code/Title: ", completer=subject_completer)
     subject = next((s for s in subjects if subject_input.lower() in (s["code"] + " " + s["title"]).lower()), None)
     if not subject:
         print("Subject not found.")
