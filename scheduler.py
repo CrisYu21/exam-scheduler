@@ -106,18 +106,21 @@ def add_exam(faculty_username, subject_code, subject_description,
 def list_exams(period_id, faculty_username=None):
     if faculty_username:
         return db_query("""
-            SELECT exam_date, exam_slot, subject_code, subject_description, proctor, room
+            SELECT exam_date, exam_slot, subject_code, subject_description,
+                   faculty_username, proctor, room, section_id
             FROM exams
             WHERE faculty_username=? AND period_id=?
             ORDER BY exam_date, exam_slot, subject_code
         """, (faculty_username, period_id))
     else:
         return db_query("""
-            SELECT exam_date, exam_slot, subject_code, subject_description, faculty_username, proctor, room
+            SELECT exam_date, exam_slot, subject_code, subject_description,
+                   faculty_username, proctor, room, section_id
             FROM exams
             WHERE period_id=?
             ORDER BY exam_date, exam_slot, subject_code
         """, (period_id,))
+
 
 # ------------------ Account management ------------------
 def create_faculty_account(username, password, name, department):

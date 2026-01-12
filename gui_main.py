@@ -11,7 +11,7 @@ from scheduler import (
     delete_faculty_account, list_faculty_accounts
 )
 # Conflict logic
-from conflict_checker import detect_all_conflicts
+from conflict_checker import detect_all_conflicts, check_new_exam_conflicts
 
 
 # ------------------ Admin actions: exam periods ------------------
@@ -155,7 +155,9 @@ def refresh_admin_overview():
 # ------------------ Faculty actions ------------------
 def filter_subjects(event=None):
     typed = subject_var.get().strip().lower()
-    rows = db_query("SELECT code, title FROM subjects ORDER BY code ASC")
+    acct = db_query("SELECT name FROM accounts WHERE username=? AND role='Faculty'", (current_user,))
+    name = acct[0][0] if acct else current_user
+    rows = db_query("SELECT code, title FROM subjects WHERE instructor=? ORDER BY code ASC", (name,))
     catalog = [f"{code} - {title}" for code, title in rows]
     if not typed:
         subject_box["values"] = catalog
@@ -183,9 +185,6 @@ def add_exam_gui():
         messagebox.showerror("Error", "Admin must set a Current Period before scheduling exams.")
         return
 
-    print("DEBUG list_exams:", list_exams(pid))
-
-
     subject_text = subject_var.get().strip()
     exam_date = date_var.get_date().strftime("%Y-%m-%d")
     exam_slot = slot_var.get().strip()
@@ -208,7 +207,7 @@ def add_exam_gui():
         return
 
     code, title = subject_text.split(" - ", 1)
-    
+
     # ✅ Section validation goes here
     section_text = section_var.get().strip()
     if not section_text or " - " not in section_text:
@@ -216,45 +215,53 @@ def add_exam_gui():
         return
     section_id = section_text.split(" - ", 1)[0]  # numeric ID
 
-
     # Confirm subject exists
     if not db_query("SELECT 1 FROM subjects WHERE code=? AND title=?", (code, title)):
         messagebox.showerror("Error", "Subject not found. Please pick from the dropdown.")
         return
 
-    # Conflict check via conflict_checker (room + proctor same date/slot in period)
-    conflicts = detect_all_conflicts(period_id=pid)
-    if conflicts["room_conflicts"] or conflicts["proctor_conflicts"] or conflicts["instructor_conflicts"]:
-        messagebox.showerror("Conflict Detected", "Exam conflicts found. Please check schedule.")
+    # Pre-check: Ensure the new exam doesn't conflict with existing exams
+    new_exam = (exam_date, exam_slot, code, title, current_user, proctor, room_label, section_id)
+    conflicts = check_new_exam_conflicts(pid, new_exam)
+    if conflicts:
+        conflict_details = []
+        for conflict_type, existing_exam in conflicts:
+            if conflict_type == "room":
+                conflict_details.append(f"Room '{existing_exam[6]}' is already booked on {existing_exam[0]} at {existing_exam[1]}.")
+            elif conflict_type == "proctor":
+                conflict_details.append(f"Proctor '{existing_exam[5]}' is already assigned on {existing_exam[0]} at {existing_exam[1]}.")
+            elif conflict_type == "instructor":
+                conflict_details.append(f"Instructor '{existing_exam[4]}' has another exam on {existing_exam[0]} at {existing_exam[1]}.")
+            elif conflict_type == "section":
+                conflict_details.append(f"Section {existing_exam[7]} already has an exam on {existing_exam[0]} at {existing_exam[1]}.")
+        messagebox.showerror("Conflict Detected", "This exam cannot be added due to the following conflicts:\n" + "\n".join(conflict_details) + "\nPlease adjust the date, slot, room, proctor, or section.")
         return
 
     # Insert exam via backend
     backend_add_exam(current_user, code, title, exam_date, exam_slot, proctor, room_label, pid, section_id)
 
-    print("DEBUG exam row:", list_exams(pid)[0])
-
     messagebox.showinfo("Added", f"Exam added: {code} - {title} on {exam_date} ({exam_slot})")
     refresh_faculty_table(current_user)
     refresh_admin_overview()
-    
-        # ✅ After adding exam, check for conflicts
+
+    # ✅ After adding exam, check for conflicts (warn about any in the updated schedule)
     conflicts = detect_all_conflicts(period_id=pid)
     conflict_messages = []
     if conflicts["room_conflicts"]:
         for a, b in conflicts["room_conflicts"]:
-            conflict_messages.append(f"Room conflict: {a[2]} vs {b[2]} in {a[7]} ({a[5]})")
+            conflict_messages.append(f"Room conflict: Exams '{a[2]}' and '{b[2]}' are both scheduled in room '{a[6]}' on {a[0]} at {a[1]}.")
     if conflicts["proctor_conflicts"]:
         for a, b in conflicts["proctor_conflicts"]:
-            conflict_messages.append(f"Proctor conflict: {a[2]} vs {b[2]} with {a[6]} ({a[5]})")
+            conflict_messages.append(f"Proctor conflict: Exams '{a[2]}' and '{b[2]}' both have proctor '{a[5]}' on {a[0]} at {a[1]}.")
     if conflicts["instructor_conflicts"]:
         for a, b in conflicts["instructor_conflicts"]:
-            conflict_messages.append(f"Instructor conflict: {a[2]} vs {b[2]} by {a[1]} ({a[5]})")
+            conflict_messages.append(f"Instructor conflict: Instructor '{a[4]}' is assigned to exams '{a[2]}' and '{b[2]}' on {a[0]} at {a[1]}.")
     if conflicts["section_conflicts"]:
         for a, b in conflicts["section_conflicts"]:
-            conflict_messages.append(f"Section conflict: Section {a[9]} has {a[2]} and {b[2]} at {a[5]}")
+            conflict_messages.append(f"Section conflict: Section {a[7]} has exams '{a[2]}' and '{b[2]}' scheduled on {a[0]} at {a[1]}.")
 
     if conflict_messages:
-        messagebox.showwarning("Conflicts Detected", "\n".join(conflict_messages))
+        messagebox.showwarning("Schedule Conflicts Detected", "The following conflicts exist in the exam schedule:\n\n" + "\n".join(conflict_messages) + "\n\nPlease review and resolve them.")
     
 def refresh_faculty_table(username):
     for row in faculty_table.get_children():
@@ -347,7 +354,7 @@ def show_faculty():
     fac_dept_lbl.config(text=f"Department: {dept}")
     proctor_var.set(name)
 
-    rows = db_query("SELECT code, title FROM subjects ORDER BY code ASC")
+    rows = db_query("SELECT code, title FROM subjects WHERE instructor=? ORDER BY code ASC", (name,))
     subject_box["values"] = [f"{c} - {t}" for c, t in rows]
 
     main_notebook.add(faculty_tab, text="Faculty")
@@ -445,7 +452,7 @@ ttk.Label(admin_tab, text="Faculty accounts", font=("Segoe UI", 11, "bold")).gri
 new_user_var = tk.StringVar()
 new_pass_var = tk.StringVar()
 new_name_var = tk.StringVar()
-new_dept_var = tk.StringVar()
+new_dept_var = tk.StringVar(value="Computer Science")  # Default value
 
 ttk.Label(admin_tab, text="Username").grid(row=12, column=0, sticky="w")
 ttk.Entry(admin_tab, textvariable=new_user_var, width=28).grid(row=12, column=1, sticky="w")
@@ -457,7 +464,8 @@ ttk.Label(admin_tab, text="Full name").grid(row=14, column=0, sticky="w")
 ttk.Entry(admin_tab, textvariable=new_name_var, width=28).grid(row=14, column=1, sticky="w")
 
 ttk.Label(admin_tab, text="Department").grid(row=15, column=0, sticky="w")
-ttk.Entry(admin_tab, textvariable=new_dept_var, width=28).grid(row=15, column=1, sticky="w")
+dept_combobox = ttk.Combobox(admin_tab, textvariable=new_dept_var, values=[ "Aircraft Maintenance Technology", "Civil Engineering", "Computer Engineering", "Computer Science", "Electrical Engineering", "Electronics Engineering", "Geodetic Engineering" , "Industrial Engineering" , "Mechanical Engineering"], state="readonly", width=28)
+dept_combobox.grid(row=15, column=1, sticky="w")
 
 ttk.Button(admin_tab, text="Create Account", command=create_faculty_account_gui).grid(row=16, column=1, sticky="e", pady=6)
 
