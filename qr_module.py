@@ -1,67 +1,142 @@
-# qr_module.py
-import qrcode
+"""
+QR Code Generation Module
+--------------------------
+Handles generation and display of QR codes for exam schedules and login.
+"""
+
+import tkinter as tk
+from tkinter import ttk
+import segno
+import subprocess
 from tkinter import messagebox
+from scheduler import (
+    get_faculty_credentials,
+    set_faculty_qr_generated,
+    db_query,
+    get_current_period_id
+)
 
-def format_exam_schedule(heading, semester, exam_period, exams_by_slot):
+# Admin credentials (hardcoded)
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "admin123"
+
+
+def generate_schedule_qr_code():
     """
-    Build the schedule text exactly like your official sheet.
-    - heading: str
-    - semester: str
-    - exam_period: str (e.g., 'March 10–14, 2026')
-    - exams_by_slot: dict[str, list[dict]]
-        {
-          "7:30–9:30 AM": [
-             {"code":"CPEP 311A", "title":"Data Structures", "orig_time":"MW 08:00–09:30 AM",
-              "instructor":"Prof. Cruz", "proctor":"Prof. Cruz", "room":"Room 105"},
-             ...
-          ],
-          ...
-        }
+    Generates a QR code containing a formatted table of the current period's exam schedule,
+    saves it as PNG, and offers to open it.
     """
-    lines = []
-    lines.append(heading)
-    lines.append(semester)
-    lines.append("ENGINEERING AND TECHNOLOGY MAJOR SUBJECTS")
-    lines.append(f"Examination Period: {exam_period}")
-    lines.append("")
+    pid = get_current_period_id()
+    if not pid:
+        messagebox.showerror("Error", "No current period set.")
+        return
 
-    # Each slot shows once; subjects listed below
-    for slot in sorted(exams_by_slot.keys()):
-        subjects = exams_by_slot[slot]
-        if not subjects:
-            continue
-        lines.append(slot)
-        lines.append("Subject Code | Title | Original Time | Instructor | Proctor | Room")
-        for subj in subjects:
-            row = (
-                f"{subj.get('code','')} | "
-                f"{subj.get('title','')} | "
-                f"{subj.get('orig_time','')} | "
-                f"{subj.get('instructor','')} | "
-                f"{subj.get('proctor','')} | "
-                f"{subj.get('room','')}"
-            )
-            lines.append(row)
-        lines.append("")  # blank line after slot block
+    # Fetch all exams for the current period
+    exams = db_query("""
+        SELECT exam_date, exam_slot, subject_code, subject_description, section_id, faculty_username, proctor, room
+        FROM exams
+        WHERE period_id=?
+        ORDER BY exam_date, exam_slot
+    """, (pid,))
 
-    return "\n".join(lines)
+    if not exams:
+        messagebox.showerror("Error", "No exams found in the current period.")
+        return
 
-def generate_qr(heading, semester, exam_period, exams_by_slot, filename="exam_schedule_qr.png"):
+    # Build table header
+    table = "Exam Schedule:\n\n"
+    table += "{:<12} | {:<8} | {:<25} | {:<10} | {:<15} | {:<12} | {:<10}\n".format(
+        "Date", "Slot", "Subject", "Section", "Instructor", "Proctor", "Room"
+    )
+    table += "-" * 110 + "\n"  # Separator line
+
+    # Add each exam row
+    for exam in exams:
+        exam_date, slot, code, title, section_id, instructor, proctor, room = exam
+        sec_row = db_query("SELECT section_name FROM sections WHERE section_id=?", (section_id,))
+        section_name = sec_row[0][0] if sec_row else "Unknown"
+        subject = f"{code} - {title}"
+        table += "{:<12} | {:<8} | {:<25} | {:<10} | {:<15} | {:<12} | {:<10}\n".format(
+            exam_date, slot, subject[:25], section_name, instructor[:15], proctor[:12], room[:10]
+        )
+
+    # Generate QR code with segno and save
+    qr = segno.make_qr(table)
+    filename = "exam_schedule_qr.png"
+    qr.save(filename, scale=10)
+
+    messagebox.showinfo("QR Code Generated", f"The QR code has been saved as '{filename}' in the project directory. Scan it to view the exam schedule table.")
+
+    # Optional: Open the file with the default image viewer
+    try:
+        subprocess.run(["xdg-open", filename])
+    except:
+        pass  # Ignore if xdg-open is not available
+
+
+def generate_faculty_login_qr(username):
     """
-    Generate and save a QR code image containing the formatted schedule text.
-    Returns the filename on success.
+    Generate a login QR for faculty (format: username:password), save PNG,
+    offer to print, and mark account as having generated a QR.
     """
-    if not heading or not semester or not exam_period:
-        messagebox.showerror("QR Error", "Heading, Semester, and Examination Period are required.")
-        return None
+    password = get_faculty_credentials(username)
+    if not password:
+        messagebox.showerror("Error", "Unable to retrieve credentials for QR generation.")
+        return
 
-    schedule_text = format_exam_schedule(heading, semester, exam_period, exams_by_slot)
+    data = f"{username}:{password}"
+    filename = f"{username}_login_qr.png"
+    try:
+        qr = segno.make_qr(data)
+        qr.save(filename, scale=10)
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to generate QR: {e}")
+        return
 
-    qr = qrcode.QRCode(version=1, box_size=10, border=4)
-    qr.add_data(schedule_text)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    img.save(filename)
+    messagebox.showinfo("QR Generated", f"Login QR saved as '{filename}' in the project directory.")
+    if messagebox.askyesno("Print QR", "Print the QR code now?"):
+        # Try system print, fallback to open with default viewer
+        try:
+            subprocess.run(["lpr", filename], check=True)
+        except Exception:
+            try:
+                subprocess.run(["xdg-open", filename], check=True)
+            except Exception:
+                messagebox.showwarning("Print Failed", "Unable to print or open the file. Please print manually.")
 
-    messagebox.showinfo("QR Generated", f"QR Code saved as {filename}")
-    return filename
+    try:
+        set_faculty_qr_generated(username)
+    except Exception:
+        # non-fatal if DB update fails
+        pass
+
+
+def generate_admin_login_qr():
+    """
+    Generate a QR code for admin login (username:password), save PNG,
+    offer to print.
+    """
+    data = f"{ADMIN_USERNAME}:{ADMIN_PASSWORD}"
+    filename = "admin_login_qr.png"
+    try:
+        qr = segno.make_qr(data)
+        qr.save(filename, scale=10)
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to generate QR: {e}")
+        return
+
+    messagebox.showinfo("QR Generated", f"Admin login QR saved as '{filename}' in the project directory.")
+    if messagebox.askyesno("Print QR", "Print the QR code now?"):
+        try:
+            subprocess.run(["lpr", filename], check=True)
+        except Exception:
+            try:
+                subprocess.run(["xdg-open", filename], check=True)
+            except Exception:
+                messagebox.showwarning("Print Failed", "Unable to print or open the file. Please print manually.")
+
+
+def check_admin_qr_generated():
+    """Check if admin QR has been generated (by file existence)."""
+    import os
+    return os.path.exists("admin_login_qr.png")

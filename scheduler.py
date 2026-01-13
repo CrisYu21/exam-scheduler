@@ -144,3 +144,17 @@ def delete_faculty_account(username):
 
 def list_faculty_accounts():
     return db_query("SELECT username, name, department FROM accounts WHERE role='Faculty' ORDER BY username")
+
+def check_faculty_qr_generated(username):
+    """Check if faculty has generated QR code."""
+    row = db_query("SELECT qr_generated FROM accounts WHERE username=? AND role='Faculty'", (username,))
+    return row[0][0] if row else 0
+
+def set_faculty_qr_generated(username):
+    """Mark QR code as generated for faculty."""
+    db_execute("UPDATE accounts SET qr_generated=1 WHERE username=? AND role='Faculty'", (username,))
+
+def get_faculty_credentials(username):
+    """Get faculty password for QR code generation."""
+    row = db_query("SELECT password FROM accounts WHERE username=? AND role='Faculty'", (username,))
+    return row[0][0] if row else None

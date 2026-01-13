@@ -78,27 +78,44 @@ def check_section_conflicts(period_id=None):
 # Check Conflicts for a New Exam (against existing exams)
 # -------------------------------
 
-def check_new_exam_conflicts(period_id, new_exam):
+def check_new_exam_conflicts(period_id, new_exam, exclude_id=None):
     """
     Checks if a new exam conflicts with existing exams in the period.
     new_exam: tuple (date, slot, subject_code, subject_description, faculty_username, proctor, room, section_id)
+    exclude_id: optional exam ID to exclude from checks (useful for editing)
     Returns a list of conflict types and conflicting exams, e.g., [("room", existing_exam), ...]
     """
     exams = list_exams(period_id)
     conflicts = []
     for exam in exams:
+        # Skip the exam being edited
+        if exclude_id and exam[8] == exclude_id:  # Assuming exam[8] is the ID; adjust if needed
+            continue
+        
         # Room conflict
-        if (exam[6].lower() == new_exam[6].lower() and exam[0] == new_exam[0] and exam[1] == new_exam[1]):
+        if (exam[6].lower() == new_exam[6].lower() and 
+            exam[0] == new_exam[0] and 
+            exam[1] == new_exam[1]):
             conflicts.append(("room", exam))
+        
         # Proctor conflict
-        if (exam[5].lower() == new_exam[5].lower() and exam[0] == new_exam[0] and exam[1] == new_exam[1]):
+        if (exam[5].lower() == new_exam[5].lower() and 
+            exam[0] == new_exam[0] and 
+            exam[1] == new_exam[1]):
             conflicts.append(("proctor", exam))
-        # Instructor conflict
-        if (exam[4].lower() == new_exam[4].lower() and exam[0] == new_exam[0] and exam[1] == new_exam[1]):
+        
+        # Instructor conflict (only flag if different instructor)
+        if (exam[4].lower() != new_exam[4].lower() and 
+            exam[0] == new_exam[0] and 
+            exam[1] == new_exam[1]):
             conflicts.append(("instructor", exam))
+        
         # Section conflict
-        if (exam[7] == new_exam[7] and exam[0] == new_exam[0] and exam[1] == new_exam[1]):
+        if (exam[7] == new_exam[7] and 
+            exam[0] == new_exam[0] and 
+            exam[1] == new_exam[1]):
             conflicts.append(("section", exam))
+    
     return conflicts
 
 

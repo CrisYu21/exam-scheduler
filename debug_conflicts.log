@@ -1,0 +1,55 @@
+=== DEBUG NEW_EXAM ===
+('2025-12-17', '7:30-9:30 AM', 'EM 213N', 'Differential Equations', 'Victor', 'Juan', 'A303', 3, '4')
+=== DEBUG EXCEPTION ===
+Traceback (most recent call last):
+  File "/home/y/Desktop/Projects/exam-scheduler/gui_main.py", line 528, in add_exam_gui
+    conflicts = check_new_exam_conflicts(pid, new_exam)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/y/Desktop/Projects/exam-scheduler/conflict_checker.py", line 99, in check_new_exam_conflicts
+    if exam[8] == new_exam[6] and exam[5] == new_exam[0] and exam[6] == new_exam[1]:
+       ~~~~^^^
+IndexError: tuple index out of range
+=== DEBUG NEW_EXAM ===
+('2025-12-17', '7:30-9:30 AM', 'EM 213N', 'Differential Equations', 'Victor', 'Juan', 'A303', 3, '4')
+=== DEBUG EXCEPTION ===
+Traceback (most recent call last):
+  File "/home/y/Desktop/Projects/exam-scheduler/gui_main.py", line 528, in add_exam_gui
+    conflicts = check_new_exam_conflicts(pid, new_exam)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/y/Desktop/Projects/exam-scheduler/conflict_checker.py", line 99, in check_new_exam_conflicts
+    if exam[8] == new_exam[6] and exam[5] == new_exam[0] and exam[6] == new_exam[1]:
+       ~~~~^^^
+IndexError: tuple index out of range
+=== DEBUG NEW_EXAM ===
+('2025-12-17', '7:30-9:30 AM', 'EM 213N', 'Differential Equations', 'Victor', 'ME', 'A303', 3, '4')
+=== DEBUG EXCEPTION ===
+Traceback (most recent call last):
+  File "/home/y/Desktop/Projects/exam-scheduler/gui_main.py", line 528, in add_exam_gui
+    conflicts = check_new_exam_conflicts(pid, new_exam)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/y/Desktop/Projects/exam-scheduler/conflict_checker.py", line 99, in check_new_exam_conflicts
+    if exam[8] == new_exam[6] and exam[5] == new_exam[0] and exam[6] == new_exam[1]:
+       ~~~~^^^
+IndexError: tuple index out of range
+=== DEBUG NEW_EXAM ===
+('2025-12-17', '7:30-9:30 AM', 'EM 213N', 'Differential Equations', 'Victor', 'Victor John L. Anunciado', 'A302', 3, '4')
+=== DEBUG EXCEPTION ===
+Traceback (most recent call last):
+  File "/home/y/Desktop/Projects/exam-scheduler/gui_main.py", line 528, in add_exam_gui
+    conflicts = check_new_exam_conflicts(pid, new_exam)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/y/Desktop/Projects/exam-scheduler/conflict_checker.py", line 99, in check_new_exam_conflicts
+    if exam[8] == new_exam[6] and exam[5] == new_exam[0] and exam[6] == new_exam[1]:
+       ~~~~^^^
+IndexError: tuple index out of range
+=== DEBUG NEW_EXAM ===
+('2025-12-17', '7:30-9:30 AM', 'EM 213N', 'Differential Equations', 'Victor', 'Me', 'A302', 3, '4')
+=== DEBUG EXCEPTION ===
+Traceback (most recent call last):
+  File "/home/y/Desktop/Projects/exam-scheduler/gui_main.py", line 528, in add_exam_gui
+    conflicts = check_new_exam_conflicts(pid, new_exam)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/y/Desktop/Projects/exam-scheduler/conflict_checker.py", line 99, in check_new_exam_conflicts
+    if exam[8] == new_exam[6] and exam[5] == new_exam[0] and exam[6] == new_exam[1]:
+       ~~~~^^^
+IndexError: tuple index out of range
