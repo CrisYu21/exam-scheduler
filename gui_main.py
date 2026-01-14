@@ -94,24 +94,61 @@ def set_current_period():
         refresh_faculty_table(current_user)
 
 # ------------------ Admin actions: accounts ------------------
+# Add global for edit mode
+edit_account_mode = False
+edit_account_username = None
+
 def create_faculty_account_gui():
+    global edit_account_mode, edit_account_username
     u = new_user_var.get().strip()
     pw = new_pass_var.get().strip()
     name = new_name_var.get().strip()
     dept = new_dept_var.get().strip()
-    if not u or not pw or not name or not dept:
+    if not u or not name or not dept:
         messagebox.showerror("Error", "All fields are required.")
         return
-    if len(pw) < 6:
+    if edit_account_mode and not pw:  # Password not required for edit
+        pass
+    elif not edit_account_mode and len(pw) < 6:
         messagebox.showerror("Error", "Password must be at least 6 characters.")
         return
     try:
-        create_faculty_account(u, pw, name, dept)
-        messagebox.showinfo("Created", f"Faculty account '{u}' created.")
+        if edit_account_mode:
+            # Update existing account
+            db_execute("UPDATE accounts SET username=?, name=?, department=? WHERE username=?", (u, name, dept, edit_account_username))
+            messagebox.showinfo("Updated", f"Faculty account '{u}' updated.")
+        else:
+            # Create new account
+            create_faculty_account(u, pw, name, dept)
+            messagebox.showinfo("Created", f"Faculty account '{u}' created.")
         new_user_var.set(""); new_pass_var.set(""); new_name_var.set(""); new_dept_var.set("")
+        reset_account_form()
         refresh_faculty_accounts_table()
     except ValueError as e:
         messagebox.showerror("Error", str(e))
+
+def reset_account_form():
+    global edit_account_mode, edit_account_username
+    edit_account_mode = False
+    edit_account_username = None
+    create_account_button.config(text="Create Account")
+
+def edit_faculty_account_gui(username):
+    global edit_account_mode, edit_account_username
+    if not username:
+        return
+    acct = db_query("SELECT username, name, department FROM accounts WHERE username=? AND role='Faculty'", (username,))
+    if not acct:
+        messagebox.showerror("Error", "Account not found.")
+        return
+    u, name, dept = acct[0]
+    new_user_var.set(u)
+    new_name_var.set(name)
+    new_dept_var.set(dept)
+    new_pass_var.set("")  # Clear password for edit
+    edit_account_mode = True
+    edit_account_username = username
+    create_account_button.config(text="Update Account")
 
 def refresh_faculty_accounts_table():
     for r in accounts_table.get_children():
@@ -540,13 +577,25 @@ def add_exam_gui():
                 messagebox.showerror("Duplicate Exam", "An identical exam (same subject, section, slot, proctor, and room) already exists in this period. Please adjust the details or check for duplicates.")
                 return
 
+        # Check for any exam with the same subject in the current period (ignore other details)
+        duplicate_check = db_query(f"""
+            SELECT 1 FROM exams
+            WHERE period_id=? AND subject_code=? AND subject_description=?{exclude_id}
+        """, (pid, code, title))
+        if duplicate_check:
+            messagebox.showerror("Duplicate Exam", "An exam for this subject already exists in the current period. You cannot create another exam for the same subject.")
+            return
+
+        # Calculate week number for the new exam date (based on ISO calendar)
+        exam_week = datetime.date.fromisoformat(exam_date).isocalendar()[1]
+
         # Check for exams with the same subject and section in the same week (now uses exclude_id)
         duplicate_check = db_query(f"""
             SELECT 1 FROM exams
-            WHERE period_id=? AND subject_code=? AND subject_description=? AND section_id=? AND strftime('%W', exam_date) = ?{exclude_id}
-""", (pid, code, title, section_id, week_num))
+            WHERE period_id=? AND subject_code=? AND subject_description=? AND section_id=? AND exam_slot=? AND proctor=? AND room=? AND strftime('%W', exam_date) = ?{exclude_id}
+""", (pid, code, title, section_id, exam_slot, proctor, room_label, exam_week))
         if duplicate_check:
-            messagebox.showerror("Duplicate Exam", "An exam for this subject and section is already scheduled in the same week. Please choose a different week or adjust the details.")
+            messagebox.showerror("Duplicate Exam", "An identical exam (same subject, section, slot, proctor, and room) already exists in the same week. Please choose a different week or adjust the details.")
             return
 
         if edit_mode:
@@ -623,7 +672,11 @@ def refresh_faculty_table(username, selected_date=None):
     current_exam_date = edate
     current_exam_date_var.set(f"Date: {edate}")
     # Insert only exam detail rows (no date row)
-    for (_edate, slot, code, title, section_id, instructor, proctor, room) in rows:
+    for (_edate, slot, code, title, section_id, instructor_username, proctor, room) in rows:
+        # Get full name for instructor
+        acct = db_query("SELECT name FROM accounts WHERE username=?", (instructor_username,))
+        instructor_full_name = acct[0][0] if acct else instructor_username  # Fallback to username if not found
+        
         sec_row = db_query("SELECT section_name FROM sections WHERE section_id=?", (section_id,))
         section_name = sec_row[0][0] if sec_row else ""
         # Fetch orig_time and section_name from subjects
@@ -643,7 +696,7 @@ def refresh_faculty_table(username, selected_date=None):
                 orig = orig_time_full
         else:
             orig = "-"
-        faculty_table.insert("", "end", values=(slot, code, title, section_name, orig, instructor, proctor, room))
+        faculty_table.insert("", "end", values=(slot, code, title, section_name, orig, instructor_full_name, proctor, room))
 
 def next_exam_date():
     global current_exam_date
@@ -682,7 +735,6 @@ def show_faculty():
     dept = acct[0][1] if acct else ""
     fac_user_lbl.config(text=f"Logged in as: {name} ({current_user})")
     fac_dept_lbl.config(text=f"Department: {dept}")
-    proctor_var.set(name)
 
     rows = db_query("SELECT code, title FROM subjects WHERE instructor=? ORDER BY code ASC", (name,))
     subject_box["values"] = [f"{c} - {t}" for c, t in rows]
@@ -811,30 +863,126 @@ main_frame.grid(row=0, column=0, sticky="nsew")
 root.grid_rowconfigure(0, weight=1)
 root.grid_columnconfigure(0, weight=1)
 
-# Login screen
-login_inner = ttk.Frame(login_frame, padding=16)
-login_inner.grid(row=0, column=0)
-login_frame.grid_rowconfigure(0, weight=1)
+# Header frame (upper portion of login GUI: only left logo and text)
+header_frame = ttk.Frame(login_frame, padding=10)
+header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+login_frame.grid_rowconfigure(0, weight=0)
 login_frame.grid_columnconfigure(0, weight=1)
 
-ttk.Label(login_inner, text="Login", font=("Segoe UI", 14, "bold")).grid(row=0, column=0, columnspan=2, pady=(0,12))
+# Load and resize header logo (only left) using OpenCV
+import cv2
+import tempfile
+import os
 
-ttk.Label(login_inner, text="Role").grid(row=1, column=0, sticky="e", padx=(0,8), pady=4)
+orig_left = None
+header_logo_left = None
+
+try:
+    orig_left = cv2.imread("logo_left.png")  # Ensure it's PNG with solid background
+except Exception as e:
+    print(f"Warning: Header logo image not found: {e}")
+
+def update_header_logos(event=None):
+    global header_logo_left
+    if orig_left is None:
+        return
+    window_width = root.winfo_width()
+    logo_size = min(window_width // 10, 100)
+    if logo_size < 50:
+        logo_size = 50
+    
+    resized_left = cv2.resize(orig_left, (logo_size, logo_size))
+    with tempfile.NamedTemporaryFile(suffix='.ppm', delete=False) as tmp_left:
+        cv2.imwrite(tmp_left.name, resized_left)
+        header_logo_left = tk.PhotoImage(file=tmp_left.name)
+        os.unlink(tmp_left.name)
+    header_left_label.config(image=header_logo_left)
+
+# Header: left logo and two-line text
+header_left_label = ttk.Label(header_frame)
+header_left_label.grid(row=0, column=0, rowspan=2, sticky="w", padx=10)  # Span both rows
+
+header_text_label1 = ttk.Label(header_frame, text="University of Bohol", font=("Segoe UI", 18, "bold"), justify="center")
+header_text_label1.grid(row=0, column=1, sticky="nsew")
+
+header_text_label2 = ttk.Label(header_frame, text="Scholarship•Character•Service", font=("Segoe UI", 12), justify="center")  # Smaller font
+header_text_label2.grid(row=1, column=1, sticky="nsew")
+
+header_frame.grid_rowconfigure(0, weight=0)
+header_frame.grid_rowconfigure(1, weight=0)
+header_frame.grid_columnconfigure(1, weight=1)  # Allow text to expand
+
+# Login inner frame (login box with logo at top)
+login_inner = ttk.Frame(login_frame, padding=16)
+login_inner.grid(row=1, column=0, sticky="nsew")
+login_frame.grid_rowconfigure(1, weight=1)
+login_frame.grid_columnconfigure(0, weight=1)
+
+# Login box: logo at top
+login_logo_label = ttk.Label(login_inner)
+login_logo_label.grid(row=0, column=0, pady=(0, 5))  # Reduced pady from 10 to 5
+
+# Text heading below logo
+ttk.Label(login_inner, text="EXAM SCHEDULER", font=("Segoe UI", 16, "bold")).grid(row=1, column=0, pady=(0, 0))  # Removed bottom pady
+
+# Form container for centering
+form_container = ttk.Frame(login_inner)
+form_container.grid(row=2, column=0, sticky="nsew")
+login_inner.grid_rowconfigure(2, weight=1)
+login_inner.grid_columnconfigure(0, weight=1)
+
+# Form frame inside container (centered)
+form_frame = ttk.Frame(form_container)
+form_frame.pack(expand=True, anchor='center')
+
+# Login form inside form_frame (keep grid layout)
+ttk.Label(form_frame, text="Role").grid(row=0, column=0, sticky="e", padx=(0,8), pady=4)
 role_var = tk.StringVar(value="Admin")
-role_box = ttk.Combobox(login_inner, textvariable=role_var, values=["Admin", "Faculty"], state="readonly", width=24)
-role_box.grid(row=1, column=1, sticky="w", pady=4)
+role_box = ttk.Combobox(form_frame, textvariable=role_var, values=["Admin", "Faculty"], state="readonly", width=24)
+role_box.grid(row=0, column=1, columnspan=2, sticky="ew", pady=4)
 
-ttk.Label(login_inner, text="Username").grid(row=2, column=0, sticky="e", padx=(0,8), pady=4)
+ttk.Label(form_frame, text="Username").grid(row=1, column=0, sticky="e", padx=(0,8), pady=4)
 ADMIN_USERNAME = "admin"
 login_user_var = tk.StringVar(value=ADMIN_USERNAME)
-ttk.Entry(login_inner, textvariable=login_user_var, width=26).grid(row=2, column=1, sticky="w", pady=4)
+ttk.Entry(form_frame, textvariable=login_user_var, width=26).grid(row=1, column=1, columnspan=2, sticky="ew", pady=4)
 
-ttk.Label(login_inner, text="Password").grid(row=3, column=0, sticky="e", padx=(0,8), pady=4)
+ttk.Label(form_frame, text="Password").grid(row=2, column=0, sticky="e", padx=(0,8), pady=4)
 login_pass_var = tk.StringVar(value=ADMIN_PASSWORD)
-ttk.Entry(login_inner, textvariable=login_pass_var, show="*", width=26).grid(row=3, column=1, sticky="w", pady=4)
+ttk.Entry(form_frame, textvariable=login_pass_var, show="*", width=26).grid(row=2, column=1, columnspan=2, sticky="ew", pady=4)
 
-ttk.Button(login_inner, text="Login", command=login).grid(row=4, column=1, sticky="e", pady=(10,0))
-ttk.Button(login_inner, text="Scan QR Code to Login", command=scan_qr_login).grid(row=5, column=1, sticky="w", pady=10)
+ttk.Button(form_frame, text="Login", command=login).grid(row=3, column=2, sticky="e", pady=(10,0))
+ttk.Button(form_frame, text="Scan QR Code to Login", command=scan_qr_login).grid(row=4, column=1, columnspan=2, sticky="ew", pady=10)
+
+# Load and resize login box logo using OpenCV (moved before bind)
+orig_login_logo = None
+login_logo = None
+
+try:
+    orig_login_logo = cv2.imread("login_logo.png")  # Ensure it's PNG with solid background
+except Exception as e:
+    print(f"Warning: Login box logo not found: {e}")
+
+def update_login_logo(event=None):
+    global login_logo
+    if orig_login_logo is None:
+        return
+    window_width = root.winfo_width()
+    logo_size = min(window_width // 8, 80)
+    if logo_size < 40:
+        logo_size = 40
+    
+    resized = cv2.resize(orig_login_logo, (logo_size, logo_size))
+    with tempfile.NamedTemporaryFile(suffix='.ppm', delete=False) as tmp:
+        cv2.imwrite(tmp.name, resized)
+        login_logo = tk.PhotoImage(file=tmp.name)
+        os.unlink(tmp.name)
+    login_logo_label.config(image=login_logo)
+
+# Bind resize events (now after function definitions)
+root.bind('<Configure>', lambda e: (update_header_logos(), update_login_logo()))
+
+# Initial logo updates
+root.after(100, lambda: (update_header_logos(), update_login_logo()))
 
 # Main notebook - change to grid for consistency
 main_notebook = ttk.Notebook(main_frame)
@@ -904,7 +1052,8 @@ ttk.Label(admin_tab, text="Department").grid(row=15, column=0, sticky="w")
 dept_combobox = ttk.Combobox(admin_tab, textvariable=new_dept_var, values=[ "Aircraft Maintenance Technology", "Civil Engineering", "Computer Engineering", "Computer Science", "Electrical Engineering", "Electronics Engineering", "Geodetic Engineering" , "Industrial Engineering" , "Mechanical Engineering"], state="readonly", width=28)
 dept_combobox.grid(row=15, column=1, sticky="w")
 
-ttk.Button(admin_tab, text="Create Account", command=create_faculty_account_gui).grid(row=16, column=1, sticky="e", pady=6)
+create_account_button = ttk.Button(admin_tab, text="Create Account", command=create_faculty_account_gui)
+create_account_button.grid(row=16, column=1, sticky="e", pady=6)
 
 accounts_table = ttk.Treeview(admin_tab, columns=("Username","Name","Department"), show="headings", height=8)
 for col in ("Username","Name","Department"):
@@ -916,7 +1065,8 @@ admin_tab.grid_columnconfigure(1, weight=1)
 
 action_frame = ttk.Frame(admin_tab)
 action_frame.grid(row=18, column=0, columnspan=2, sticky="ew", pady=4)
-ttk.Button(action_frame, text="Reset Password", command=lambda: (u:=get_selected_account()) and reset_faculty_password_gui(u)).pack(side="left")
+ttk.Button(action_frame, text="Edit Account", command=lambda: (u:=get_selected_account()) and edit_faculty_account_gui(u)).pack(side="left")
+ttk.Button(action_frame, text="Reset Password", command=lambda: (u:=get_selected_account()) and reset_faculty_password_gui(u)).pack(side="left", padx=6)
 ttk.Button(action_frame, text="Delete Account", command=lambda: (u:=get_selected_account()) and delete_faculty_account_gui(u)).pack(side="left", padx=6)
 
 ttk.Separator(admin_tab).grid(row=19, column=0, columnspan=2, sticky="ew", pady=8)
@@ -974,9 +1124,9 @@ ttk.Label(faculty_tab, textvariable=current_period_label_var).grid(row=2, column
 # Subject selection
 ttk.Label(faculty_tab, text="Subject (Autocomplete)").grid(row=3, column=0, sticky="w")
 subject_var = tk.StringVar()
-subject_box = ttk.Combobox(faculty_tab, textvariable=subject_var, values=[], width=48)
+subject_box = ttk.Combobox(faculty_tab, textvariable=subject_var, values=[], width=48, state="readonly")  # Set to readonly
 subject_box.grid(row=3, column=1, sticky="w")
-subject_box.bind("<KeyRelease>", filter_subjects)
+# Remove <KeyRelease> bind since readonly prevents typing; keep selection bind
 subject_box.bind("<<ComboboxSelected>>", on_subject_selected)
 
 # ✅ Section selection
@@ -989,7 +1139,7 @@ section_box.bind("<<ComboboxSelected>>", on_section_selected)
 # Original Class Time
 ttk.Label(faculty_tab, text="Original Class Time").grid(row=5, column=0, sticky="w")
 orig_time_var = tk.StringVar()
-ttk.Entry(faculty_tab, textvariable=orig_time_var, width=32).grid(row=5, column=1, sticky="w")
+ttk.Entry(faculty_tab, textvariable=orig_time_var, width=32, state="readonly").grid(row=5, column=1, sticky="w")
 
 # Exam Date
 ttk.Label(faculty_tab, text="Exam Date").grid(row=6, column=0, sticky="w")
@@ -1068,4 +1218,11 @@ if __name__ == "__main__":
     ensure_schema()
     login_frame.tkraise()
     root.mainloop()
+
+import cv2
+img = cv2.imread("logo_left.gif")
+if img is None:
+    print("File not found or can't be read.")
+else:
+    print("File loaded successfully.")
 
