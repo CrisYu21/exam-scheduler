@@ -149,6 +149,7 @@ def edit_faculty_account_gui(username):
     edit_account_mode = True
     edit_account_username = username
     create_account_button.config(text="Update Account")
+    messagebox.showinfo("Edit Mode", "Account form populated. Leave password empty to keep current password.\n\nClick 'Cancel' button to discard changes.")
 
 def refresh_faculty_accounts_table():
     for r in accounts_table.get_children():
@@ -186,6 +187,53 @@ def delete_faculty_account_gui(username):
     except ValueError as e:
         messagebox.showerror("Error", str(e))
 
+# ------------------ Admin: time slots management ------------------
+def add_time_slot():
+    slot = time_slot_var.get().strip()
+    if not slot:
+        messagebox.showerror("Error", "Time slot cannot be empty.")
+        return
+    try:
+        # Check if slot already exists
+        existing = db_query("SELECT slot_label FROM time_slots WHERE slot_label=?", (slot,))
+        if existing:
+            messagebox.showerror("Error", f"Time slot '{slot}' already exists.")
+            return
+        db_execute("INSERT INTO time_slots (slot_label) VALUES (?)", (slot,))
+        messagebox.showinfo("Success", f"Time slot '{slot}' added.")
+        time_slot_var.set("")
+        refresh_time_slots_table()
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to add time slot: {str(e)}")
+
+def delete_time_slot():
+    sel = time_slots_table.selection()
+    if not sel:
+        messagebox.showerror("Selection", "Select a time slot in the table first.")
+        return
+    vals = time_slots_table.item(sel[0])["values"]
+    slot = vals[0] if vals else None
+    if not slot:
+        return
+    try:
+        # Check if slot is being used in any exams
+        exams = db_query("SELECT COUNT(*) FROM exams WHERE exam_slot=?", (slot,))
+        if exams and exams[0][0] > 0:
+            messagebox.showerror("Error", f"Time slot '{slot}' is in use by {exams[0][0]} exam(s). Cannot delete.")
+            return
+        db_execute("DELETE FROM time_slots WHERE slot_label=?", (slot,))
+        messagebox.showinfo("Deleted", f"Time slot '{slot}' deleted.")
+        refresh_time_slots_table()
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to delete time slot: {str(e)}")
+
+def refresh_time_slots_table():
+    for row in time_slots_table.get_children():
+        time_slots_table.delete(row)
+    rows = db_query("SELECT slot_label FROM time_slots ORDER BY slot_label ASC")
+    for (slot,) in rows:
+        time_slots_table.insert("", "end", values=(slot,))
+
 # ------------------ Admin: exam overview ------------------
 def refresh_admin_overview(selected_date=None):
     global admin_current_exam_date
@@ -197,7 +245,12 @@ def refresh_admin_overview(selected_date=None):
         admin_current_exam_date_var.set("")
         return
     if selected_date is None:
-        selected_date = admin_current_exam_date
+        # Prefer previously selected date, otherwise pick the earliest exam date in the period
+        if admin_current_exam_date:
+            selected_date = admin_current_exam_date
+        else:
+            first_date_row = db_query("SELECT MIN(exam_date) FROM exams WHERE period_id=?", (pid,))
+            selected_date = first_date_row[0][0] if first_date_row and first_date_row[0][0] else None
     query = """
         SELECT exam_date, exam_slot, subject_code, subject_description, section_id, faculty_username, proctor, room
         FROM exams
@@ -207,7 +260,7 @@ def refresh_admin_overview(selected_date=None):
     if selected_date:
         query += " AND exam_date = ?"
         params.append(selected_date)
-    query += " ORDER BY exam_date, exam_slot, subject_code"
+    query += " ORDER BY CASE WHEN exam_slot LIKE '%PM' AND CAST(SUBSTR(exam_slot, 1, INSTR(exam_slot, ':') - 1) AS INTEGER) < 12 THEN CAST(SUBSTR(exam_slot, 1, INSTR(exam_slot, ':') - 1) AS INTEGER) + 12 WHEN exam_slot LIKE '%AM' AND CAST(SUBSTR(exam_slot, 1, INSTR(exam_slot, ':') - 1) AS INTEGER) = 12 THEN 0 ELSE CAST(SUBSTR(exam_slot, 1, INSTR(exam_slot, ':') - 1) AS INTEGER) END ASC, CAST(SUBSTR(exam_slot, INSTR(exam_slot, ':') + 1, 2) AS INTEGER) ASC, subject_code"
     rows = db_query(query, params)
     if not rows:
         admin_overview.insert("", "end", values=(f"No exams for {selected_date or 'selected date'}", "", "", "", "", "", "", ""))
@@ -215,7 +268,13 @@ def refresh_admin_overview(selected_date=None):
         return
     edate = rows[0][0]
     admin_current_exam_date = edate
-    admin_current_exam_date_var.set(f"Date: {edate}")
+    # Format date as: Thursday, January 1, 2026
+    try:
+        date_obj = datetime.date.fromisoformat(edate)
+        formatted_date = date_obj.strftime("%A, %B %d, %Y")
+        admin_current_exam_date_var.set(f"Exam Date: {formatted_date}")
+    except:
+        admin_current_exam_date_var.set(f"Date: {edate}")
     # Insert only exam detail rows (no date row)
     for (_edate, slot, code, title, section_id, instructor, proctor, room) in rows:
         sec_row = db_query("SELECT section_name FROM sections WHERE section_id=?", (section_id,))
@@ -476,7 +535,7 @@ def edit_exam_gui():
         edit_exam_id = exam_id
         add_exam_button.config(text="Update Exam")
 
-        messagebox.showinfo("Edit Mode", "Form populated with selected exam. You can edit date, slot, proctor, and room. Subject and section are read-only.")
+        messagebox.showinfo("Edit Mode", "Form populated with selected exam. You can edit date, slot, proctor, and room. Subject and section are read-only.\n\nClick 'Cancel' button to cancel editing and reset the form.")
 
     except Exception as e:
         messagebox.showerror("Error", f"An unexpected error occurred: {str(e)}. Please try again.")
@@ -652,7 +711,12 @@ def refresh_faculty_table(username, selected_date=None):
         current_exam_date_var.set("")
         return
     if selected_date is None:
-        selected_date = current_exam_date
+        # Prefer previously selected date, otherwise pick the earliest exam date for this faculty in the period
+        if current_exam_date:
+            selected_date = current_exam_date
+        else:
+            first_date_row = db_query("SELECT MIN(exam_date) FROM exams WHERE faculty_username=? AND period_id=?", (username, pid))
+            selected_date = first_date_row[0][0] if first_date_row and first_date_row[0][0] else None
     query = """
         SELECT exam_date, exam_slot, subject_code, subject_description, section_id, faculty_username, proctor, room
         FROM exams
@@ -662,15 +726,20 @@ def refresh_faculty_table(username, selected_date=None):
     if selected_date:
         query += " AND exam_date = ?"
         params.append(selected_date)
-    query += " ORDER BY exam_date, exam_slot, subject_code"
+    query += " ORDER BY CASE WHEN exam_slot LIKE '%PM' AND CAST(SUBSTR(exam_slot, 1, INSTR(exam_slot, ':') - 1) AS INTEGER) < 12 THEN CAST(SUBSTR(exam_slot, 1, INSTR(exam_slot, ':') - 1) AS INTEGER) + 12 WHEN exam_slot LIKE '%AM' AND CAST(SUBSTR(exam_slot, 1, INSTR(exam_slot, ':') - 1) AS INTEGER) = 12 THEN 0 ELSE CAST(SUBSTR(exam_slot, 1, INSTR(exam_slot, ':') - 1) AS INTEGER) END ASC, CAST(SUBSTR(exam_slot, INSTR(exam_slot, ':') + 1, 2) AS INTEGER) ASC, subject_code"
     rows = db_query(query, params)
     if not rows:
-        faculty_table.insert("", "end", values=(f"No exams for {selected_date or 'selected date'}", "", "", "", "", "", "", ""))
-        current_exam_date_var.set(f"Date: {selected_date or ''}")
+        current_exam_date_var.set("")
         return
     edate = rows[0][0]
     current_exam_date = edate
-    current_exam_date_var.set(f"Date: {edate}")
+    # Format date as: Thursday, January 1, 2026
+    try:
+        date_obj = datetime.date.fromisoformat(edate)
+        formatted_date = date_obj.strftime("%A, %B %d, %Y")
+        current_exam_date_var.set(f"Exam Date: {formatted_date}")
+    except:
+        current_exam_date_var.set(f"Date: {edate}")
     # Insert only exam detail rows (no date row)
     for (_edate, slot, code, title, section_id, instructor_username, proctor, room) in rows:
         # Get full name for instructor
@@ -752,7 +821,9 @@ def show_faculty():
     if pid:
         dates = db_query("SELECT MIN(exam_date) FROM exams WHERE faculty_username=? AND period_id=?", (current_user, pid))
         current_exam_date = dates[0][0] if dates and dates[0][0] else None
-    refresh_faculty_table(current_user, current_exam_date)
+        refresh_faculty_table(current_user, current_exam_date)
+    else:
+        refresh_faculty_table(current_user, None)
 
 # ------------------ Login / logout / show_admin functions ------------------
 def login(username=None, password=None):
@@ -809,6 +880,7 @@ def show_admin():
     current_period_label_var.set(current_period_display())
     refresh_period_dropdowns()
     refresh_faculty_accounts_table()
+    refresh_time_slots_table()
     refresh_admin_overview()
 
 def logout():
@@ -852,8 +924,14 @@ def scan_qr_login():
 
 # ------------------ GUI layout ------------------
 root = tk.Tk()
-root.title("Campus Exam Scheduler")
+root.title("Exam Scheduler")
 root.resizable(True, True)  # Allow resizing
+
+# Configure ttk Style for better table visibility
+style = ttk.Style()
+style.configure("Treeview", borderwidth=1, relief="solid", rowheight=22)
+style.configure("Treeview.Heading", borderwidth=1, relief="raised")
+style.map('Treeview', background=[('selected', '#0078d4')], foreground=[('selected', 'white')])
 
 # Frames
 login_frame = ttk.Frame(root, padding=24)
@@ -895,7 +973,10 @@ def update_header_logos(event=None):
     with tempfile.NamedTemporaryFile(suffix='.ppm', delete=False) as tmp_left:
         cv2.imwrite(tmp_left.name, resized_left)
         header_logo_left = tk.PhotoImage(file=tmp_left.name)
-        os.unlink(tmp_left.name)
+        try:
+            os.unlink(tmp_left.name)
+        except OSError:
+            pass  # Windows may lock the file; OS will clean up eventually
     header_left_label.config(image=header_logo_left)
 
 # Header: left logo and two-line text
@@ -975,7 +1056,10 @@ def update_login_logo(event=None):
     with tempfile.NamedTemporaryFile(suffix='.ppm', delete=False) as tmp:
         cv2.imwrite(tmp.name, resized)
         login_logo = tk.PhotoImage(file=tmp.name)
-        os.unlink(tmp.name)
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass  # Windows may lock the file; OS will clean up eventually
     login_logo_label.config(image=login_logo)
 
 # Bind resize events (now after function definitions)
@@ -996,114 +1080,242 @@ main_notebook.add(faculty_tab, text="Faculty")
 main_notebook.hide(admin_tab)
 main_notebook.hide(faculty_tab)
 
-# ----- Admin Tab -----
-ttk.Label(admin_tab, text="Create exam period", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0,8))
+# ----- Admin Tab with Sub-tabs -----
+# Create a notebook for admin sub-sections
+admin_notebook = ttk.Notebook(admin_tab)
+admin_notebook.pack(fill="both", expand=True, padx=4, pady=4)
+
+# Create sub-tabs for admin
+periods_tab = ttk.Frame(admin_notebook, padding=8)
+time_slots_tab = ttk.Frame(admin_notebook, padding=8)
+accounts_tab = ttk.Frame(admin_notebook, padding=8)
+overview_tab = ttk.Frame(admin_notebook, padding=8)
+
+admin_notebook.add(periods_tab, text="Periods")
+admin_notebook.add(time_slots_tab, text="Time Slots")
+admin_notebook.add(accounts_tab, text="Accounts")
+admin_notebook.add(overview_tab, text="Overview")
+
+# ===== PERIODS TAB =====
+periods_form = ttk.LabelFrame(periods_tab, text="Create New Exam Period", padding=12)
+periods_form.pack(anchor="nw", padx=12, pady=12, fill="x")
+
+ttk.Label(periods_form, text="Create Exam Period", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
 sem_num_var = tk.StringVar(value="1st Semester")
 acad_year_var = tk.StringVar(value="2025–2026")
 period_type_var = tk.StringVar(value="Final Exams")
-start_date_var = DateEntry(admin_tab, width=12)
-end_date_var = DateEntry(admin_tab, width=12)
+start_date_var = DateEntry(periods_form, width=12)
+end_date_var = DateEntry(periods_form, width=12)
 
-ttk.Label(admin_tab, text="Semester").grid(row=1, column=0, sticky="w")
-ttk.Combobox(admin_tab, textvariable=sem_num_var, values=["1st Semester", "2nd Semester"], state="readonly", width=24).grid(row=1, column=1, sticky="w")
+ttk.Label(periods_form, text="Semester").grid(row=1, column=0, sticky="w", pady=4)
+ttk.Combobox(periods_form, textvariable=sem_num_var, values=["1st Semester", "2nd Semester"], state="readonly", width=20).grid(row=1, column=1, sticky="w", pady=4)
 
-ttk.Label(admin_tab, text="Academic year").grid(row=2, column=0, sticky="w")
-ttk.Entry(admin_tab, textvariable=acad_year_var, width=26).grid(row=2, column=1, sticky="w")
+ttk.Label(periods_form, text="Academic year").grid(row=2, column=0, sticky="w", pady=4)
+ttk.Entry(periods_form, textvariable=acad_year_var, width=22).grid(row=2, column=1, sticky="w", pady=4)
 
-ttk.Label(admin_tab, text="Exam type").grid(row=3, column=0, sticky="w")
-ttk.Combobox(admin_tab, textvariable=period_type_var, values=["Midterm Exams", "Final Exams"], state="readonly", width=24).grid(row=3, column=1, sticky="w")
+ttk.Label(periods_form, text="Exam type").grid(row=3, column=0, sticky="w", pady=4)
+ttk.Combobox(periods_form, textvariable=period_type_var, values=["Midterm Exams", "Final Exams"], state="readonly", width=20).grid(row=3, column=1, sticky="w", pady=4)
 
-ttk.Label(admin_tab, text="Start date").grid(row=4, column=0, sticky="w")
-start_date_var.grid(row=4, column=1, sticky="w")
+ttk.Label(periods_form, text="Start date").grid(row=4, column=0, sticky="w", pady=4)
+start_date_var.grid(row=4, column=1, sticky="w", pady=4)
 
-ttk.Label(admin_tab, text="End date").grid(row=5, column=0, sticky="w")
-end_date_var.grid(row=5, column=1, sticky="w")
+ttk.Label(periods_form, text="End date").grid(row=5, column=0, sticky="w", pady=4)
+end_date_var.grid(row=5, column=1, sticky="w", pady=4)
 
-ttk.Button(admin_tab, text="Add Period", command=add_new_period).grid(row=6, column=1, sticky="e", pady=6)
+ttk.Button(periods_form, text="Add Period", command=add_new_period, width=15).grid(row=6, column=1, sticky="e", pady=8)
 
-ttk.Separator(admin_tab).grid(row=7, column=0, columnspan=2, sticky="ew", pady=8)
+ttk.Separator(periods_form).grid(row=7, column=0, columnspan=2, sticky="ew", pady=10)
 
-ttk.Label(admin_tab, text="Current Period", font=("Segoe UI", 11, "bold")).grid(row=8, column=0, sticky="w")
+ttk.Label(periods_form, text="Current Period", font=("Segoe UI", 9, "bold")).grid(row=8, column=0, sticky="w", pady=(8, 4))
 period_select_var = tk.StringVar()
-period_box_admin = ttk.Combobox(admin_tab, textvariable=period_select_var, values=[], state="readonly", width=64)
-period_box_admin.grid(row=8, column=1, sticky="w", pady=2)
-ttk.Button(admin_tab, text="Set Current Period", command=set_current_period).grid(row=9, column=1, sticky="w")
+period_box_admin = ttk.Combobox(periods_form, textvariable=period_select_var, values=[], state="readonly", width=50)
+period_box_admin.grid(row=8, column=1, sticky="ew", pady=4)
+ttk.Button(periods_form, text="Set Current Period", command=set_current_period, width=15).grid(row=9, column=1, sticky="w", pady=4)
 
-ttk.Separator(admin_tab).grid(row=10, column=0, columnspan=2, sticky="ew", pady=8)
+periods_form.grid_columnconfigure(1, weight=1)
 
-ttk.Label(admin_tab, text="Faculty accounts", font=("Segoe UI", 11, "bold")).grid(row=11, column=0, sticky="w")
+# ===== TIME SLOTS TAB =====
+time_slots_content = ttk.LabelFrame(time_slots_tab, text="Manage Time Slots", padding=12)
+time_slots_content.pack(anchor="nw", padx=12, pady=12, fill="both", expand=False)
+
+ttk.Label(time_slots_content, text="Add New Time Slot", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+time_slot_var = tk.StringVar()
+ttk.Label(time_slots_content, text="Time slot (e.g., 7:00-8:00 AM)", font=("Segoe UI", 8)).grid(row=1, column=0, sticky="w", pady=4)
+ttk.Entry(time_slots_content, textvariable=time_slot_var, width=20).grid(row=1, column=1, sticky="ew", pady=4)
+
+add_slot_button = ttk.Button(time_slots_content, text="Add Slot", command=add_time_slot, width=10)
+add_slot_button.grid(row=2, column=0, sticky="ew", pady=(6, 0), padx=(0, 2))
+
+cancel_slot_button = ttk.Button(time_slots_content, text="Cancel", command=lambda: time_slot_var.set(""), width=10)
+cancel_slot_button.grid(row=2, column=1, sticky="ew", pady=(6, 0), padx=(2, 0))
+
+ttk.Separator(time_slots_content).grid(row=3, column=0, columnspan=2, sticky="ew", pady=10)
+
+ttk.Label(time_slots_content, text="Current Time Slots", font=("Segoe UI", 9, "bold")).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 6))
+
+# Time slots table
+time_slots_table_frame = ttk.Frame(time_slots_content, relief="solid", borderwidth=1)
+time_slots_table_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=4)
+
+time_slots_table = ttk.Treeview(
+    time_slots_table_frame,
+    columns=("Time Slot",),
+    show="headings",
+    height=8
+)
+time_slots_vsb = ttk.Scrollbar(time_slots_table_frame, orient="vertical", command=time_slots_table.yview)
+time_slots_table.configure(yscrollcommand=time_slots_vsb.set)
+
+time_slots_table.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
+time_slots_vsb.grid(row=0, column=1, sticky="ns", pady=4)
+
+time_slots_table_frame.grid_rowconfigure(0, weight=0)
+time_slots_table_frame.grid_columnconfigure(0, weight=1)
+
+time_slots_table.column("#0", width=0, stretch=False)
+time_slots_table.heading("Time Slot", text="Time Slot")
+time_slots_table.column("Time Slot", width=180, minwidth=120, anchor="w", stretch=True)
+
+# Delete button for time slots
+time_slots_button_frame = ttk.Frame(time_slots_content)
+time_slots_button_frame.grid(row=6, column=0, columnspan=2, sticky="w", padx=0, pady=6)
+ttk.Button(time_slots_button_frame, text="✕ Delete Selected", command=delete_time_slot, width=15).pack(side="left")
+
+time_slots_content.grid_columnconfigure(1, weight=1)
+
+# ===== ACCOUNTS TAB =====
+accounts_content = ttk.Frame(accounts_tab)
+accounts_content.pack(anchor="nw", padx=12, pady=12, fill="both", expand=True)
+
+# Create a horizontal layout: form on left, table on right
+faculty_form_frame = ttk.LabelFrame(accounts_content, text="Add New Account", padding=10)
+faculty_form_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=0)
 
 new_user_var = tk.StringVar()
 new_pass_var = tk.StringVar()
 new_name_var = tk.StringVar()
-new_dept_var = tk.StringVar(value="Computer Science")  # Default value
+new_dept_var = tk.StringVar()
 
-ttk.Label(admin_tab, text="Username").grid(row=12, column=0, sticky="w")
-ttk.Entry(admin_tab, textvariable=new_user_var, width=28).grid(row=12, column=1, sticky="w")
+ttk.Label(faculty_form_frame, text="Username", font=("Segoe UI", 8)).grid(row=0, column=0, sticky="w", pady=3)
+ttk.Entry(faculty_form_frame, textvariable=new_user_var, width=18).grid(row=0, column=1, sticky="ew", pady=3)
 
-ttk.Label(admin_tab, text="Password").grid(row=13, column=0, sticky="w")
-ttk.Entry(admin_tab, textvariable=new_pass_var, show="*", width=28).grid(row=13, column=1, sticky="w")
+ttk.Label(faculty_form_frame, text="Password", font=("Segoe UI", 8)).grid(row=1, column=0, sticky="w", pady=3)
+ttk.Entry(faculty_form_frame, textvariable=new_pass_var, show="*", width=18).grid(row=1, column=1, sticky="ew", pady=3)
 
-ttk.Label(admin_tab, text="Full name").grid(row=14, column=0, sticky="w")
-ttk.Entry(admin_tab, textvariable=new_name_var, width=28).grid(row=14, column=1, sticky="w")
+ttk.Label(faculty_form_frame, text="Full name", font=("Segoe UI", 8)).grid(row=2, column=0, sticky="w", pady=3)
+ttk.Entry(faculty_form_frame, textvariable=new_name_var, width=18).grid(row=2, column=1, sticky="ew", pady=3)
 
-ttk.Label(admin_tab, text="Department").grid(row=15, column=0, sticky="w")
-dept_combobox = ttk.Combobox(admin_tab, textvariable=new_dept_var, values=[ "Aircraft Maintenance Technology", "Civil Engineering", "Computer Engineering", "Computer Science", "Electrical Engineering", "Electronics Engineering", "Geodetic Engineering" , "Industrial Engineering" , "Mechanical Engineering"], state="readonly", width=28)
-dept_combobox.grid(row=15, column=1, sticky="w")
+ttk.Label(faculty_form_frame, text="Department", font=("Segoe UI", 8)).grid(row=3, column=0, sticky="w", pady=3)
+dept_combobox = ttk.Combobox(faculty_form_frame, textvariable=new_dept_var, values=["Aircraft Maintenance Technology", "Civil Engineering", "Computer Engineering", "Computer Science", "Electrical Engineering", "Electronics Engineering", "Geodetic Engineering", "Industrial Engineering", "Mechanical Engineering"], state="readonly", width=16)
+dept_combobox.grid(row=3, column=1, sticky="ew", pady=3)
 
-create_account_button = ttk.Button(admin_tab, text="Create Account", command=create_faculty_account_gui)
-create_account_button.grid(row=16, column=1, sticky="e", pady=6)
+create_account_button = ttk.Button(faculty_form_frame, text="Create", command=create_faculty_account_gui, width=9)
+create_account_button.grid(row=4, column=0, sticky="ew", pady=(6, 0), padx=(0, 2))
 
-accounts_table = ttk.Treeview(admin_tab, columns=("Username","Name","Department"), show="headings", height=8)
+cancel_account_button = ttk.Button(faculty_form_frame, text="Cancel", command=reset_account_form, width=9)
+cancel_account_button.grid(row=4, column=1, sticky="ew", pady=(6, 0), padx=(2, 0))
+
+faculty_form_frame.grid_columnconfigure(1, weight=1)
+
+# Admin Accounts Table with scrollbars and improved responsiveness
+accounts_table_frame = ttk.LabelFrame(accounts_content, text="Faculty Accounts List", padding=0, relief="solid", borderwidth=2)
+accounts_table_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=0, rowspan=1)
+accounts_content.grid_rowconfigure(0, weight=1)
+accounts_content.grid_columnconfigure(0, weight=0)
+accounts_content.grid_columnconfigure(1, weight=1)
+
+accounts_table = ttk.Treeview(
+    accounts_table_frame, 
+    columns=("Username","Name","Department"), 
+    show="headings", 
+    height=14
+)
+accounts_vsb = ttk.Scrollbar(accounts_table_frame, orient="vertical", command=accounts_table.yview)
+accounts_hsb = ttk.Scrollbar(accounts_table_frame, orient="horizontal", command=accounts_table.xview)
+accounts_table.configure(yscrollcommand=accounts_vsb.set, xscrollcommand=accounts_hsb.set)
+
+accounts_table.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+accounts_vsb.grid(row=0, column=1, sticky="ns", pady=4)
+accounts_hsb.grid(row=1, column=0, sticky="ew", padx=4)
+
+accounts_table_frame.grid_rowconfigure(0, weight=1)
+accounts_table_frame.grid_columnconfigure(0, weight=1)
+
+# Configure columns with stretch enabled
+accounts_table.column("#0", width=0, stretch=False)
 for col in ("Username","Name","Department"):
+    if col == "Username":
+        width, minwidth, stretch = 120, 80, False
+    elif col == "Name":
+        width, minwidth, stretch = 140, 100, True
+    else:  # Department
+        width, minwidth, stretch = 160, 120, True
+    
     accounts_table.heading(col, text=col)
-    accounts_table.column(col, width=180 if col!="Department" else 220)
-accounts_table.grid(row=17, column=0, columnspan=2, sticky="nsew", pady=8)
-admin_tab.grid_rowconfigure(17, weight=1)
-admin_tab.grid_columnconfigure(1, weight=1)
+    accounts_table.column(col, width=width, minwidth=minwidth, anchor="w", stretch=stretch)
 
-action_frame = ttk.Frame(admin_tab)
-action_frame.grid(row=18, column=0, columnspan=2, sticky="ew", pady=4)
-ttk.Button(action_frame, text="Edit Account", command=lambda: (u:=get_selected_account()) and edit_faculty_account_gui(u)).pack(side="left")
-ttk.Button(action_frame, text="Reset Password", command=lambda: (u:=get_selected_account()) and reset_faculty_password_gui(u)).pack(side="left", padx=6)
-ttk.Button(action_frame, text="Delete Account", command=lambda: (u:=get_selected_account()) and delete_faculty_account_gui(u)).pack(side="left", padx=6)
+# Action buttons frame below table
+action_frame = ttk.Frame(accounts_table_frame)
+action_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=4, pady=4)
+ttk.Button(action_frame, text="✎ Edit", command=lambda: (u:=get_selected_account()) and edit_faculty_account_gui(u), width=9).pack(side="left", padx=1)
+ttk.Button(action_frame, text="🔑 Reset", command=lambda: (u:=get_selected_account()) and reset_faculty_password_gui(u), width=9).pack(side="left", padx=1)
+ttk.Button(action_frame, text="✕ Delete", command=lambda: (u:=get_selected_account()) and delete_faculty_account_gui(u), width=9).pack(side="left", padx=1)
 
-ttk.Separator(admin_tab).grid(row=19, column=0, columnspan=2, sticky="ew", pady=8)
+# ===== OVERVIEW TAB =====
+overview_content = ttk.Frame(overview_tab)
+overview_content.pack(anchor="nw", padx=12, pady=12, fill="both", expand=True)
 
-ttk.Label(admin_tab, text="Exam overview (current period)", font=("Segoe UI", 11, "bold")).grid(row=20, column=0, sticky="w")
+ttk.Label(overview_content, text="Exam Schedule Overview", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
-# Add pagination for admin
-admin_pagination_frame = ttk.Frame(admin_tab)
-admin_pagination_frame.grid(row=20, column=1, sticky="e", pady=4)
-ttk.Button(admin_pagination_frame, text="Previous Date", command=prev_admin_date).pack(side="left")
-ttk.Button(admin_pagination_frame, text="Next Date", command=next_admin_date).pack(side="left", padx=6)
+# Add pagination for admin with better layout
+admin_pagination_frame = ttk.Frame(overview_content)
+admin_pagination_frame.grid(row=0, column=1, sticky="e", pady=0)
+ttk.Button(admin_pagination_frame, text="◀ Previous", command=prev_admin_date, width=11).pack(side="left", padx=2)
+ttk.Button(admin_pagination_frame, text="Next ▶", command=next_admin_date, width=11).pack(side="left", padx=2)
 
-# Date display label (separate from table)
+# Date display label with better styling
 admin_current_exam_date_var = tk.StringVar()
-ttk.Label(admin_tab, textvariable=admin_current_exam_date_var, font=("Segoe UI", 10, "bold")).grid(row=21, column=0, columnspan=2, sticky="w", pady=(4,6))
+admin_date_display = ttk.Label(overview_content, textvariable=admin_current_exam_date_var, font=("Segoe UI", 9, "bold"), foreground="#0078d4")
+admin_date_display.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 6), padx=0)
+
+# Admin Exam Overview Table with scrollbars and improved styling
+admin_table_frame = ttk.LabelFrame(overview_content, text="Schedules for Date", padding=0, relief="solid", borderwidth=2)
+admin_table_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=8)
+overview_content.grid_rowconfigure(2, weight=1)
+overview_content.grid_columnconfigure(0, weight=1)
 
 admin_overview = ttk.Treeview(
-    admin_tab,
+    admin_table_frame,
     columns=("Slot","Code","Title","Section","Original Time","Instructor","Proctor","Room"),
     show="headings",
-    height=12
+    height=10
 )
+admin_vsb = ttk.Scrollbar(admin_table_frame, orient="vertical", command=admin_overview.yview)
+admin_hsb = ttk.Scrollbar(admin_table_frame, orient="horizontal", command=admin_overview.xview)
+admin_overview.configure(yscrollcommand=admin_vsb.set, xscrollcommand=admin_hsb.set)
+
+admin_overview.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+admin_vsb.grid(row=0, column=1, sticky="ns", pady=4)
+admin_hsb.grid(row=1, column=0, sticky="ew", padx=4)
+
+admin_table_frame.grid_rowconfigure(0, weight=1)
+admin_table_frame.grid_columnconfigure(0, weight=1)
+
+# Configure columns with better sizing and stretch
+admin_overview.column("#0", width=0, stretch=False)
 for col, w in [
-    ("Slot",180),("Code",90),("Title",200),("Section",100),("Original Time",120),("Instructor",110),("Proctor",110),("Room",90)
+    ("Slot",110),("Code",75),("Title",150),("Section",85),("Original Time",105),("Instructor",95),("Proctor",95),("Room",75)
 ]:
     admin_overview.heading(col, text=col)
-    admin_overview.column(col, width=w)
-admin_overview.grid(row=22, column=0, columnspan=2, sticky="nsew", pady=8)
-admin_tab.grid_rowconfigure(22, weight=1)
-admin_tab.grid_columnconfigure(0, weight=1)
-admin_tab.grid_columnconfigure(1, weight=1)
+    admin_overview.column(col, width=w, minwidth=60, anchor="w", stretch=True)
 
-# Admin logout button (restored)
-admin_button_bar = ttk.Frame(admin_tab)
-admin_button_bar.grid(row=23, column=0, columnspan=2, sticky="ew", pady=8)
-ttk.Button(admin_button_bar, text="Generate QR Code", command=generate_schedule_qr_code).pack(side="left", padx=6)
-ttk.Button(admin_button_bar, text="Logout", command=logout).pack(side="right")
+# Overview action buttons
+overview_button_bar = ttk.Frame(overview_content)
+overview_button_bar.grid(row=3, column=0, columnspan=2, sticky="ew", pady=8)
+ttk.Button(overview_button_bar, text="📋 Generate QR", command=generate_schedule_qr_code, width=15).pack(side="left", padx=2)
+ttk.Button(overview_button_bar, text="🚪 Logout", command=logout, width=15).pack(side="right", padx=2)
 
 # ----- Faculty Tab -----
 faculty_info_frame = ttk.Frame(faculty_tab)
@@ -1122,7 +1334,7 @@ current_period_label_var = tk.StringVar(value=current_period_display())
 ttk.Label(faculty_tab, textvariable=current_period_label_var).grid(row=2, column=1, sticky="w")
 
 # Subject selection
-ttk.Label(faculty_tab, text="Subject (Autocomplete)").grid(row=3, column=0, sticky="w")
+ttk.Label(faculty_tab, text="Subject").grid(row=3, column=0, sticky="w")
 subject_var = tk.StringVar()
 subject_box = ttk.Combobox(faculty_tab, textvariable=subject_var, values=[], width=48, state="readonly")  # Set to readonly
 subject_box.grid(row=3, column=1, sticky="w")
@@ -1169,11 +1381,15 @@ room_box.grid(row=9, column=1, sticky="w")
 
 # Add Exam button
 add_exam_button = ttk.Button(faculty_tab, text="Add Exam", command=add_exam_gui)
-add_exam_button.grid(row=10, column=1, sticky="e", pady=6)
+add_exam_button.grid(row=10, column=1, sticky="e", pady=6, padx=(6, 0))
+
+# Cancel button next to Add/Update button
+cancel_exam_button = ttk.Button(faculty_tab, text="Cancel", command=reset_form)
+cancel_exam_button.grid(row=10, column=1, sticky="w", pady=6, padx=(0, 6))
 
 # Add Remove and Edit buttons
-ttk.Button(faculty_tab, text="Remove Exam", command=remove_exam_gui).grid(row=10, column=0, sticky="w", pady=6)
-ttk.Button(faculty_tab, text="Edit Exam", command=edit_exam_gui).grid(row=11, column=0, sticky="w", pady=6)
+ttk.Button(faculty_tab, text="Remove Exam", command=remove_exam_gui).grid(row=11, column=0, sticky="w", pady=6)
+ttk.Button(faculty_tab, text="Edit Exam", command=edit_exam_gui).grid(row=11, column=1, sticky="w", pady=6)
 
 # Shift the separator and table down
 ttk.Separator(faculty_tab).grid(row=12, column=0, columnspan=2, sticky="ew", pady=8)
@@ -1181,33 +1397,45 @@ ttk.Separator(faculty_tab).grid(row=12, column=0, columnspan=2, sticky="ew", pad
 # After the "My Exams" label
 pagination_frame = ttk.Frame(faculty_tab)
 pagination_frame.grid(row=13, column=1, sticky="e", pady=4)
-ttk.Button(pagination_frame, text="Previous Date", command=prev_exam_date).pack(side="left")
-ttk.Button(pagination_frame, text="Next Date", command=next_exam_date).pack(side="left", padx=6)
+ttk.Button(pagination_frame, text="◀ Previous", command=prev_exam_date, width=12).pack(side="left", padx=2)
+ttk.Button(pagination_frame, text="Next ▶", command=next_exam_date, width=12).pack(side="left", padx=2)
 
-ttk.Label(faculty_tab, text="My Exams (current period)").grid(row=13, column=0, sticky="w")
+ttk.Label(faculty_tab, text="My Exams (current period)", font=("Segoe UI", 11, "bold")).grid(row=13, column=0, sticky="w")
 
-# Date display label (separate from table)
+# Date display label with better styling
 current_exam_date_var = tk.StringVar()
-ttk.Label(faculty_tab, textvariable=current_exam_date_var, font=("Segoe UI", 10, "bold")).grid(row=14, column=0, columnspan=2, sticky="w", pady=(4,6))
+faculty_date_display = ttk.Label(faculty_tab, textvariable=current_exam_date_var, font=("Segoe UI", 11, "bold"), foreground="#0078d4")
+faculty_date_display.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(8, 6), padx=8)
 
-# Create faculty_table here
+# Create faculty_table here with scrollbars
+faculty_table_frame = ttk.LabelFrame(faculty_tab, text="Your Schedule", padding=0, relief="solid", borderwidth=2)
+faculty_table_frame.grid(row=15, column=0, columnspan=2, sticky="nsew", pady=8)
+faculty_tab.grid_rowconfigure(15, weight=1)
+faculty_tab.grid_columnconfigure(0, weight=1)
+faculty_tab.grid_columnconfigure(1, weight=1)
+
 faculty_table = ttk.Treeview(
-    faculty_tab,
+    faculty_table_frame,
     columns=("Slot","Code","Title","Section","Original Time","Instructor","Proctor","Room"),
     show="headings",
     height=14
 )
+faculty_vsb = ttk.Scrollbar(faculty_table_frame, orient="vertical", command=faculty_table.yview)
+faculty_hsb = ttk.Scrollbar(faculty_table_frame, orient="horizontal", command=faculty_table.xview)
+faculty_table.configure(yscrollcommand=faculty_vsb.set, xscrollcommand=faculty_hsb.set)
+
+faculty_table.grid(row=0, column=0, sticky="nsew")
+faculty_vsb.grid(row=0, column=1, sticky="ns")
+faculty_hsb.grid(row=1, column=0, sticky="ew")
+
+faculty_table_frame.grid_rowconfigure(0, weight=1)
+faculty_table_frame.grid_columnconfigure(0, weight=1)
+
 for col, w in [
-    ("Slot",180),("Code",90),("Title",200),("Section",100),("Original Time",120),("Instructor",110),("Proctor",110),("Room",90)
+    ("Slot",140),("Code",80),("Title",160),("Section",90),("Original Time",110),("Instructor",100),("Proctor",100),("Room",80)
 ]:
     faculty_table.heading(col, text=col)
-    faculty_table.column(col, width=w)
-
-# Move table down to row 15
-faculty_table.grid(row=15, column=0, columnspan=2, sticky="nsew", pady=8)
-faculty_tab.grid_rowconfigure(15, weight=1)
-faculty_tab.grid_columnconfigure(0, weight=1)
-faculty_tab.grid_columnconfigure(1, weight=1)
+    faculty_table.column(col, width=w, minwidth=60)
 
 fac_button_bar = ttk.Frame(faculty_tab)
 fac_button_bar.grid(row=16, column=0, columnspan=2, sticky="ew", pady=8)
@@ -1219,10 +1447,4 @@ if __name__ == "__main__":
     login_frame.tkraise()
     root.mainloop()
 
-import cv2
-img = cv2.imread("logo_left.gif")
-if img is None:
-    print("File not found or can't be read.")
-else:
-    print("File loaded successfully.")
 
